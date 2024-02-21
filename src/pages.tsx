@@ -1,7 +1,7 @@
-import { Hono } from 'hono'
 import { jsxRenderer, useRequestContext } from 'hono/jsx-renderer'
+import { createHonoApp } from './honoApp'
 
-export const pageApp = new Hono()
+export const pageApp = createHonoApp()
 
 pageApp.get('/', (c) => {
   return c.text('Hello Hono!')
