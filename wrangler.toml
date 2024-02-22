@@ -7,5 +7,9 @@ node_compat = true
 binding = "AI"
 
 [[vectorize]]
-binding = "VECTORIZE_INDEX"
-index_name = "wck-2024"
+binding = "VECTORIZE_SESSIONS_INDEX"
+index_name = "wck-2024-sessions"
+
+[[vectorize]]
+binding = "VECTORIZE_GENERAL_INDEX"
+index_name = "wck-2024-general"
