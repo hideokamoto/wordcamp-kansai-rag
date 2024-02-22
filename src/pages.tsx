@@ -29,7 +29,7 @@ pageApp.get(
             resource.innerHTML = ''
             target.innerHTML = 'loading...'
 
-            const response = await fetch('/api/rag/sessions', {
+            const response = await fetch('/api/rag/ask', {
                 method: 'POST',
                 headers: {
                   'content-type': 'application/json'
@@ -40,7 +40,6 @@ pageApp.get(
             let decoder = new TextDecoder()
             reader.read().then(function processText({ done, value }) {
               if (done) {
-                console.log('done')
                 return
               }
               if (target.innerHTML === 'loading...') {
@@ -54,7 +53,6 @@ pageApp.get(
                   target.innerHTML += data.answer
                 } else if (data.sessions) {
                   data.sessions.forEach(session => {
-                    console.log(session)
                     resource.innerHTML += '<li><a href="' + session.url + '" target="_blanck" rel="noopener noreferrer">' + session.title + "</a></li>"
                   })
                 }      

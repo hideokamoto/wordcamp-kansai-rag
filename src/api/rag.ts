@@ -1,6 +1,6 @@
 import { StringOutputParser } from "@langchain/core/output_parsers";
-import { RunnableLambda, RunnableMap, RunnablePassthrough, RunnableSequence } from 'langchain/runnables';
-import { ChatPromptTemplate } from 'langchain/prompts';
+import { RunnableBranch, RunnableLambda, RunnableMap, RunnablePassthrough, RunnableSequence } from 'langchain/runnables';
+import { ChatPromptTemplate, PromptTemplate } from 'langchain/prompts';
 import { ChatCloudflareWorkersAI, CloudflareWorkersAI, CloudflareWorkersAIEmbeddings, CloudflareVectorizeStore } from "@langchain/cloudflare";
 import { Ai } from '@cloudflare/ai'
 import { HydeRetriever } from 'langchain/retrievers/hyde';
@@ -78,6 +78,57 @@ const createJapaneseTranslationChain = (bindings: Pick<Bindings, 'AI'>) => {
     return japaneseTranslationChain
 }
 
+
+
+const createGeneralChain = (bindings: Bindings) => {
+  const {
+      vectorStore,
+      llm,
+      chat
+  } = initModels(bindings, 'VECTORIZE_GENERAL_INDEX')
+  const retriever = new HydeRetriever({
+    vectorStore,
+    llm,
+    k: 20,
+  });
+  const generateAnswerChain = RunnableSequence.from([
+    {
+      context: async input => {
+          const relevantDocuments = await retriever.getRelevantDocuments(input.question)
+          return relevantDocuments
+      },
+      question: input => input.question,
+    },
+    RunnableMap.from({
+      sessions: input => {
+          const sessions = distinctDocuments(input.context)
+          return sessions.map((session: Document) => {
+              return session.metadata
+          })
+      },
+      answer: RunnableSequence.from([{
+              context: input => input.context.map((sesison: Document) => sesison.pageContent).join('\n'),
+              question: input => input.question,
+          },
+          ChatPromptTemplate.fromMessages([
+          [
+              "system",
+              `Use the following pieces of context to answer the question at the end.
+              If you don't know the answer, just say that you don't know, don't try to make up an answer.
+              Use three sentences maximum and keep the answer as concise as possible.
+              Always say "thanks for asking!" at the end of the answer.
+              
+              {context}`],
+          ["human", "{question}"],
+          ]),
+          chat,
+          new StringOutputParser()
+      ])
+    }),
+  ])
+  return generateAnswerChain
+}
+
 const createSessionChain = (bindings: Bindings) => {
     const {
         vectorStore,
@@ -93,17 +144,16 @@ const createSessionChain = (bindings: Bindings) => {
       {
         context: async input => {
             const relevantDocuments = await retriever.getRelevantDocuments(input.question)
-            const sessions = distinctDocuments(relevantDocuments)
-            return sessions
+            return relevantDocuments
         },
         question: input => input.question,
       },
       RunnableMap.from({
         sessions: input => {
-            const sessions = input.context.map((session: Document) => {
+          const sessions = distinctDocuments(input.context)
+          return sessions.map((session: Document) => {
                 return session.metadata
-            })
-            return sessions
+          })
         },
         answer: RunnableSequence.from([{
                 context: input => input.context.map((sesison: Document) => sesison.pageContent).join('\n'),
@@ -128,6 +178,52 @@ const createSessionChain = (bindings: Bindings) => {
     ])
     return generateAnswerChain
 }
+
+const createIndexChain = (bindings: Bindings) => {
+  const {
+      chat
+  } = initModels(bindings, 'VECTORIZE_SESSIONS_INDEX')
+  const evaluateQuestionChain = RunnableSequence.from([
+    {
+      question: input => input.question,
+    },
+    ChatPromptTemplate.fromMessages([
+      [
+        "system",
+        `
+あなたはWordPressに関するカンファレンスのスタッフです。
+ユーザーの質問が、「カンファレンスのセッションについて」か「それ以外か」を評価してください。
+質問が「WordPressに関係する内容」の場合は、「セッションである」と判断します。
+返答は"session"もしくは"other"のみで回答してください。
+
+## 例
+- "ブロックテーマのセッションはありますか？" -> "session"
+- "テーマ開発について" -> "session"
+- "コントリビューターデイは？" -> "other"
+- "会場はどこ？" -> "other"
+`
+      ],
+      ["human", "{question}"],
+    ]),
+    chat,
+    new StringOutputParser()
+  ])
+  
+  const route = (input: {topic: string; question: string}) => {
+    if (input.topic.toLocaleLowerCase().includes('session')) {
+      return createSessionChain(bindings)
+    }
+    return createGeneralChain(bindings)
+  }
+  const fullChain = RunnableSequence.from([
+    {
+      topic: evaluateQuestionChain,
+      question: input => input.question
+    },
+    route
+  ])
+  return fullChain
+}
 /*
 ragApp.get('/sessions', async c => {
     const question = "ブロックテーマのセッションはありますか？"
@@ -135,6 +231,12 @@ ragApp.get('/sessions', async c => {
     //const answerStream = await qaChain.stream({question})
     const result = await chain.invoke({question})
     return c.json(result)
+})
+ragApp.get('/ask', async c => {
+  const question = "行動規範について教えて"//"ブロックテーマのセッションはありますか？"
+  const chain = createIndexChain(c.env)
+  const result = await chain.invoke({question})
+  return c.json(result)
 })
 */
 
@@ -151,67 +253,16 @@ ragApp.post('/sessions', async c => {
         }
     })
 })
-/*
-ragApp.get('/', async c => {
-
-    const question = "ブロックテーマのセッションはありますか？"
-    const {
-        vectorStore,
-        llm,
-        chat
-    } = initModels(c.env, 'VECTORIZE_SESSIONS_INDEX')
-    const retriever = new HydeRetriever({
-      vectorStore,
-      llm,
-      k: 20,
-    });
-    const japaneseTranslationChain = createJapaneseTranslationChain(c.env)
-  
-    const generateAnswerChain = RunnableSequence.from([
-      {
-        context: input => input.context,
-        question: input => input.question
-      },
-      ChatPromptTemplate.fromMessages([
-        [
-          "system",
-          `Answer the question based on only the following context:
-        
-      {context}`,
-        ],
-        ["human", "{question}"],
-      ]),
-      chat,
-      new StringOutputParser()
-    ])
-    const qaChain = RunnableSequence.from([
-      {
-        question: input => input.question,
-        context: async input => {
-  
-          const results = await retriever.getRelevantDocuments(input.question);
-          console.log(results[0].metadata)
-          return results.map(result => {
-            return result.pageContent.replace(/\/n\/n/, '\n')
-          }).join('\n')
-          const vectorResult = await vectorStore.similaritySearch(input.question, 20)
-          return vectorResult.map(result => {
-            return result.pageContent.replace(/\/n\/n/, '\n')
-          }).join('\n')
-        },
-      },
-      {
-        answer: generateAnswerChain,
-        debug: input => {
-          console.log(JSON.stringify(input,null,2))
-          return ''
-        }
-      },
-      japaneseTranslationChain,
-      new StringOutputParser()
-    ])
-    const result = await qaChain.invoke({question})
-    console.log(result)
-    return c.json(result)
+ragApp.post('/ask', async c => {
+  const {query:question} = await c.req.json<{
+      query: string
+  }>()
+  const chain = createIndexChain(c.env)
+  const answerStream = await chain.stream({question})
+  return streamText(c, async (stream) => {
+      for await (const s of answerStream) {
+          await stream.write(JSON.stringify(s))
+          await stream.sleep(10)
+      }
+  })
 })
-*/
